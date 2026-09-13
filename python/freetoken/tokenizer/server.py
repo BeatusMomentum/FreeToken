@@ -24,6 +24,7 @@ from freetoken.message import (
     UserMsg,
     UserReply,
 )
+from freetoken.mm.config import MultimodalConfig
 from freetoken.utils import (
     ZmqPullQueue,
     ZmqPushQueue,
@@ -134,6 +135,7 @@ def tokenize_worker(
     tokenizer_id: int = -1,
     model_source: str = "huggingface",
     ack_queue: mp.Queue[str] | None = None,
+    mm: MultimodalConfig | None = None,
 ) -> None:
     send_backend = ZmqPushQueue(backend_addr, create=False, encoder=BaseBackendMsg.encoder)
     send_frontend = ZmqPushQueue(frontend_addr, create=False, encoder=BaseFrontendMsg.encoder)
@@ -142,10 +144,12 @@ def tokenize_worker(
     tokenizer = load_tokenizer(tokenizer_path)
     logger = init_logger(__name__, f"tokenizer_{tokenizer_id}")
 
+    from freetoken.mm.processor import get_mm_processor
+
     from .detokenize import DetokenizeManager
     from .tokenize import TokenizeManager
 
-    tokenize_manager = TokenizeManager(tokenizer)
+    tokenize_manager = TokenizeManager(tokenizer, get_mm_processor(tokenizer_path, mm))
     detokenize_manager = DetokenizeManager(
         tokenizer, load_eos_token_ids(tokenizer_path, tokenizer)
     )

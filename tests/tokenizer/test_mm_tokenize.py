@@ -31,10 +31,11 @@ def _png(w, h):
 
 @pytest.fixture(scope="module", params=MODELS, ids=os.path.basename)
 def manager(request):
+    from freetoken.mm.processor import get_mm_processor
     from freetoken.tokenizer.tokenize import TokenizeManager
     from freetoken.utils.hf import load_tokenizer
 
-    return TokenizeManager(load_tokenizer(request.param))
+    return TokenizeManager(load_tokenizer(request.param), get_mm_processor(request.param))
 
 
 def _msg(images, n_parts=1):
@@ -72,11 +73,15 @@ def test_same_image_same_hash_and_pad(manager):
     assert c.mm_items[0].hash != a.mm_items[0].hash
 
 
-def test_max_pixels_clamps(manager):
-    msg = _msg([_png(3840, 2160)])
-    msg.mm_max_pixels = 2 * 1024 * 1024
-    r = manager.tokenize([msg])[0]
-    assert r.mm_items[0].num_tokens <= 2048
+def test_image_max_tokens_clamps(manager):
+    from freetoken.mm.config import MultimodalConfig
+    from freetoken.mm.processor import get_mm_processor
+    from freetoken.tokenizer.tokenize import TokenizeManager
+
+    path = manager.tokenizer.name_or_path
+    budgeted = TokenizeManager(manager.tokenizer, get_mm_processor(path, MultimodalConfig(image_max_tokens=2048)))
+    assert manager.tokenize([_msg([_png(3840, 2160)])])[0].mm_items[0].num_tokens > 2048
+    assert budgeted.tokenize([_msg([_png(3840, 2160)])])[0].mm_items[0].num_tokens <= 2048
 
 
 def test_count_prompt_tokens_counts_the_expanded_image(manager):
@@ -93,7 +98,7 @@ def test_count_prompt_tokens_counts_the_expanded_image(manager):
     ]}]
     state = SimpleNamespace(
         frontend_tokenizer=lambda: manager,
-        config=SimpleNamespace(served_modalities=frozenset({"image"}), mm=SimpleNamespace(text_model_only=False, disabled_encoders=frozenset(), max_pixels=None)),
+        config=SimpleNamespace(served_modalities=frozenset({"image"}), mm=SimpleNamespace(text_model_only=False, disabled_encoders=frozenset())),
     )
     counted = asyncio.run(count_prompt_tokens(messages, None, {}, state))
     expanded = manager.tokenize([_msg([png])])[0].input_ids.numel()

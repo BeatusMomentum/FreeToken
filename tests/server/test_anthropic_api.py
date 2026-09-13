@@ -424,7 +424,7 @@ class FakeState:
         self._outputs = outputs
         self.maintenance_state = "serving"
         self.config = SimpleNamespace(
-            mm=SimpleNamespace(max_pixels=None, text_model_only=False, disabled_encoders=frozenset()),
+            mm=SimpleNamespace(text_model_only=False, disabled_encoders=frozenset()),
             reasoning_parser=None,
             tool_call_parser="llama3",
             served_model_name="test-model",
@@ -813,10 +813,10 @@ def test_frontend_tokenizer_concurrent_first_build_dedupes():
 
     orig_load, orig_tm = _utils.load_tokenizer, _tok.TokenizeManager
     _utils.load_tokenizer = _slow_load
-    _tok.TokenizeManager = lambda tok: tok
+    _tok.TokenizeManager = lambda tok, mm=None: tok
     try:
         fm = FrontendManager(
-            config=SimpleNamespace(model_path="dedupe-test"),
+            config=SimpleNamespace(model_path="dedupe-test", mm=None),
             send_tokenizer=None,
             recv_tokenizer=None,
         )

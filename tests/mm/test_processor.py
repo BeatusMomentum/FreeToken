@@ -10,6 +10,7 @@ import torch
 
 from freetoken.message import MMItem
 from freetoken.mm import MM_PAD_SHIFT_VALUE
+from freetoken.mm.config import MultimodalConfig
 from freetoken.mm.processor import MMProcessor, PromptReplacement, image_positions
 from freetoken.mm.processors.qwen_vl import QwenVLMMProcessor
 
@@ -32,9 +33,10 @@ class _Family(MMProcessor):
     placeholder = [PLACEHOLDER]
 
     def __init__(self, n_soft):
+        super().__init__("/fake", MultimodalConfig())
         self.n_soft = n_soft
 
-    def process(self, images, max_pixels):
+    def process(self, images):
         return [
             MMItem(modality="image", hash=100 + i, pad_value=MM_PAD_SHIFT_VALUE + 100 + i, offsets=[], feature=torch.zeros(1))
             for i, _ in enumerate(images)
@@ -57,7 +59,7 @@ class _Tiled(_Family):
 
 def test_replacement_keeps_wrapper_tokens_and_pads_only_embedding_slots():
     ids = torch.tensor([1, 2, PLACEHOLDER, 3, PLACEHOLDER, 4], dtype=torch.int32)
-    r = _Family(n_soft=3).apply(ids, [_png(), _png()], None)
+    r = _Family(n_soft=3).apply(ids, [_png(), _png()])
     a, b = r.mm_items
     assert r.input_ids.tolist() == [1, 2, BOI, a.pad_value, a.pad_value, a.pad_value, EOI, 3, BOI, b.pad_value, b.pad_value, b.pad_value, EOI, 4]
     assert a.offsets == [[3, 6]] and b.offsets == [[9, 12]]
@@ -66,7 +68,7 @@ def test_replacement_keeps_wrapper_tokens_and_pads_only_embedding_slots():
 
 def test_replacement_with_several_embedding_runs_yields_several_spans():
     ids = torch.tensor([PLACEHOLDER, 5], dtype=torch.int32)
-    r = _Tiled(n_soft=0).apply(ids, [_png()], None)
+    r = _Tiled(n_soft=0).apply(ids, [_png()])
     (item,) = r.mm_items
     p = item.pad_value
     assert r.input_ids.tolist() == [p, p, BOI, p, p, BOI, p, p, BOI, 5]
@@ -76,7 +78,7 @@ def test_replacement_with_several_embedding_runs_yields_several_spans():
 def test_placeholder_count_is_checked_before_any_image_is_decoded():
     ids = torch.tensor([PLACEHOLDER, PLACEHOLDER], dtype=torch.int32)
     with pytest.raises(ValueError, match="2 image placeholders but the request carries 1"):
-        _Family(n_soft=1).apply(ids, [b"not an image"], None)
+        _Family(n_soft=1).apply(ids, [b"not an image"])
 
 
 def test_image_positions_freeze_t_spread_hw_and_advance_by_the_longer_side():
@@ -118,7 +120,7 @@ def _grid_item(h, w, offsets):
 
 
 def test_qwen_processor_reads_config():
-    proc = QwenVLMMProcessor(_hf_config(), "/nonexistent")
+    proc = QwenVLMMProcessor(_hf_config(), "/nonexistent", MultimodalConfig())
     assert proc.image_token_id == 151655 and proc.is_mrope and proc.merge == 2
     assert proc.image_grid(_grid_item(8, 6, [[0, 12]])) == (4, 3)
     repl = proc.prompt_replacement(_grid_item(8, 6, []))
@@ -129,8 +131,33 @@ def test_qwen_processor_reads_config():
     assert dummy.grid_thw == [1, 2, 2]
 
 
+def test_qwen_token_budget_and_kwargs_reach_the_image_processor():
+    from freetoken.mm.config import MultimodalConfig
+
+    calls = []
+
+    class _FakeImageProcessor:
+        size = {"shortest_edge": 65536, "longest_edge": 16777216}
+
+        def __call__(self, images, **kwargs):
+            calls.append(kwargs)
+            return {"pixel_values": torch.zeros(4, 3 * 2 * 16 * 16), "image_grid_thw": torch.tensor([[1, 2, 2]])}
+
+    mm = MultimodalConfig(image_min_tokens=100, image_max_tokens=1000, processor_kwargs={"do_convert_rgb": False})
+    proc = QwenVLMMProcessor(_hf_config(), "/nonexistent", mm)
+    proc._image_processor = lambda: _FakeImageProcessor()
+    (item,) = proc.process([object()])
+    assert item.grid_thw == [1, 2, 2]
+    # one token is a 32x32 patch of the resized image; the budget travels as pixel areas in size, the extra kwarg rides along
+    assert calls == [{"return_tensors": "pt", "size": {"shortest_edge": 100 * 1024, "longest_edge": 1000 * 1024}, "do_convert_rgb": False}]
+    proc = QwenVLMMProcessor(_hf_config(), "/nonexistent", MultimodalConfig())
+    proc._image_processor = lambda: _FakeImageProcessor()
+    proc.process([object()])
+    assert calls[-1] == {"return_tensors": "pt"}  # no budget, no size override
+
+
 def test_qwen_processor_positions_follow_the_grid():
-    proc = QwenVLMMProcessor(_hf_config(), "/nonexistent")
+    proc = QwenVLMMProcessor(_hf_config(), "/nonexistent", MultimodalConfig())
     # 3 text tokens, one 8x6-patch image (4x3 = 12 llm tokens), 2 text tokens
     pos, delta = proc.positions(17, [_grid_item(8, 6, [[3, 15]])])
     assert pos.shape == (3, 17)
@@ -152,8 +179,8 @@ def test_registry_resolves_by_architecture(monkeypatch):
         "/unknown-vlm": _hf_config(arch="SomeOtherForConditionalGeneration"),
     }
     monkeypatch.setattr(freetoken.utils, "cached_load_hf_config", lambda p: configs[p])
-    get_mm_processor.cache_clear()
     assert isinstance(get_mm_processor("/qwen"), QwenVLMMProcessor)
+    assert get_mm_processor("/qwen", MultimodalConfig(disabled_encoders=frozenset({"vision"}))) is None  # --mm-disable vision
     assert get_mm_processor("/text-only") is None
     assert get_mm_processor("/unknown-vlm") is None
     assert get_mm_processor("/missing") is None  # a config that fails to load means no vision

@@ -364,7 +364,7 @@ class Engine:
             from freetoken.mm.encoder_cache import EncoderCache
             from freetoken.mm.processor import get_mm_processor
 
-            self.mm_processor = get_mm_processor(config.model_path)
+            self.mm_processor = get_mm_processor(config.model_path, config.mm)
             self.encoder_cache = EncoderCache(storage=config.mm.embed_cache_device)
             logger.info_rank0(
                 f"Multimodal enabled: {type(self.mm_processor).__name__}, encoders "
