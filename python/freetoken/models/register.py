@@ -65,6 +65,8 @@ _QWEN4_EXP_PACKED = _QWEN3_5_PACKED + (
 _GLM5_NEXT_PACKED = _EXPERTS_PACKED + (
     ("in_proj", ("q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "g_a_proj")),
 )
+_GLM5_NEXT_PROCESSOR = "freetoken.mm.processors.glm5_next:Glm5NextMMProcessor"
+_GLM5_NEXT_ENCODERS = (EncoderSpec("vision", "vision_config", ("image",)),)
 # Gemma 4 keeps HF's flat layer children (mlp / experts / router) under one feed_forward block.
 _GEMMA4_SEGMENTS = (
     ("feed_forward.shared_mlp", "mlp"),
@@ -275,12 +277,15 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
     # GLM-5.3-Flash (model_type glm5_next): hybrid KDA linear attention (34/45 layers)
     # + NoPE-MLA/DSA with a kpool-compressed indexer (11/45), mHC x4 residual streams,
     # 288-expert sigmoid/noaux_tc MoE; natively-multimodal wrapper config (text tower
-    # in text_config, weights under model.language_model.), served text-only.
+    # in text_config, weights under model.language_model.); the patch-grid vision tower
+    # under model.visual. serves image input.
     "Glm5NextForConditionalGeneration": ModelSpec(
         "freetoken.models.glm5_next",
-        "Glm5NextForCausalLM",
+        "Glm5NextForConditionalGeneration",
         checkpoint_roots=_LANGUAGE_MODEL_ROOT,
         packed_modules_mapping=_GLM5_NEXT_PACKED,
+        mm_processor=_GLM5_NEXT_PROCESSOR,
+        encoders=_GLM5_NEXT_ENCODERS,
     ),
     # Text-only sibling (the text_config's own architectures entry).
     "Glm5NextForCausalLM": ModelSpec(

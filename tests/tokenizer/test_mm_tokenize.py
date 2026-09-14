@@ -1,4 +1,4 @@
-"""Image tokenization against real Qwen VL checkpoints (skipped when absent)."""
+"""Image tokenization against real Qwen VL, Gemma-4 and GLM-5.3 checkpoints (skipped when absent)."""
 
 from __future__ import annotations
 
@@ -17,12 +17,13 @@ MODELS = [
 ]
 
 GEMMA = os.environ.get("FREETOKEN_GEMMA4_MODEL", "")
+GLM = os.environ.get("FREETOKEN_GLM53_MODEL", "")
 
 pytestmark = [
     pytest.mark.needs_weights,
     pytest.mark.skipif(
-        not MODELS and not os.path.exists(os.path.join(GEMMA, "config.json")),
-        reason="no FREETOKEN_QWEN36_MODEL / FREETOKEN_QWEN3VL_MODEL / FREETOKEN_GEMMA4_MODEL checkpoint",
+        not MODELS and not any(os.path.exists(os.path.join(p, "config.json")) for p in (GEMMA, GLM)),
+        reason="no FREETOKEN_QWEN36_MODEL / FREETOKEN_QWEN3VL_MODEL / FREETOKEN_GEMMA4_MODEL / FREETOKEN_GLM53_MODEL checkpoint",
     ),
 ]
 
@@ -140,3 +141,25 @@ def test_gemma_image_max_tokens_picks_a_smaller_soft_token_budget():
     budgeted = TokenizeManager(tokenizer, get_mm_processor(GEMMA, MultimodalConfig(image_max_tokens=100))).tokenize([_msg([_png(640, 400)])])[0]
     # the processor scales the image to the budget as far as its aspect ratio allows: 10x6 pooled cells for 640x400
     assert budgeted.mm_items[0].num_soft_tokens == 60 < default.mm_items[0].num_soft_tokens
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(GLM, "config.json")), reason="FREETOKEN_GLM53_MODEL not set")
+def test_glm_expands_the_image_token_between_the_template_wrappers():
+    from freetoken.mm.config import MultimodalConfig
+    from freetoken.mm.processor import get_mm_processor
+    from freetoken.tokenizer.tokenize import TokenizeManager
+    from freetoken.utils import cached_load_hf_config
+    from freetoken.utils.hf import load_tokenizer
+
+    hf = cached_load_hf_config(GLM)
+    tokenizer = load_tokenizer(GLM)
+    r = TokenizeManager(tokenizer, get_mm_processor(GLM)).tokenize([_msg([_png(640, 400)])])[0]
+    item = r.mm_items[0]
+    ((start, end),) = item.offsets
+    ids = r.input_ids
+    # 640x400 is zero-padded to a 644x420 canvas: 46x30 patches, one token per 2x2 of them
+    assert item.grid_thw == [1, 30, 46] and end - start == item.num_tokens == 345
+    assert ids[start - 1].item() == hf.image_start_token_id and ids[end].item() == hf.image_end_token_id
+    assert bool((ids[start:end] == item.pad_value).all()) and r.mrope_positions is None
+    budgeted = TokenizeManager(tokenizer, get_mm_processor(GLM, MultimodalConfig(image_max_tokens=100))).tokenize([_msg([_png(640, 400)])])[0]
+    assert budgeted.mm_items[0].num_tokens <= 100
