@@ -12,6 +12,7 @@ from freetoken.message import MMItem
 from freetoken.mm import MM_PAD_SHIFT_VALUE
 from freetoken.mm.config import MultimodalConfig
 from freetoken.mm.processor import MMProcessor, PromptReplacement, image_positions
+from freetoken.mm.processors.gemma4 import Gemma4MMProcessor, Gemma4UnifiedMMProcessor
 from freetoken.mm.processors.qwen_vl import QwenVLMMProcessor
 
 PLACEHOLDER = 7
@@ -169,18 +170,127 @@ def test_qwen_processor_positions_follow_the_grid():
     assert delta == 8 + 1 - 17
 
 
+def _gemma_config():
+    return SimpleNamespace(
+        architectures=["Gemma4ForConditionalGeneration"],
+        image_token_id=258880,
+        boi_token_id=255999,
+        eoi_token_id=258882,
+        vision_soft_tokens_per_image=280,
+        vision_config=SimpleNamespace(patch_size=16, pooling_kernel_size=3),
+        text_config=SimpleNamespace(vocab_size=262144),
+    )
+
+
+class _FakeGemmaImageProcessor:
+    """Two soft tokens (18 valid patches) padded out to a 2520-row batch, like the real processor."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, images, return_tensors, max_soft_tokens=None):
+        self.calls.append(max_soft_tokens)
+        rows = 2520
+        pixels = torch.zeros(1, rows, 768)
+        pixels[0, :18] = 0.75
+        positions = torch.full((1, rows, 2), -1, dtype=torch.int64)
+        positions[0, :18, 0] = torch.arange(18) % 6
+        positions[0, :18, 1] = torch.arange(18) // 6
+        return {"pixel_values": pixels, "image_position_ids": positions, "num_soft_tokens_per_image": torch.tensor([2])}
+
+
+def _gemma_processor(mm=None):
+    proc = Gemma4MMProcessor(_gemma_config(), "/nonexistent", mm or MultimodalConfig())
+    fake = _FakeGemmaImageProcessor()
+    proc._image_processor = lambda: fake
+    return proc, fake
+
+
+def test_gemma_items_strip_padding_and_wrap_the_soft_tokens_in_boi_eoi():
+    proc, _ = _gemma_processor()
+    (item,) = proc.process([object()])
+    assert item.feature.shape == (18, 768) and item.feature.dtype == torch.float32
+    assert item.feature[0, 0].item() == 0.75  # the [0, 1] pixels of the reference processor; the tower maps them to [-1, 1]
+    assert item.position_ids.shape == (18, 2) and item.position_ids[7].tolist() == [1, 1]
+    assert item.num_soft_tokens == 2 and item.pad_value >= MM_PAD_SHIFT_VALUE
+    repl = proc.prompt_replacement(item)
+    assert proc.placeholder == [258880]
+    assert repl.full == [255999, 258880, 258880, 258882] and repl.embed_spans() == [[1, 3]]
+    assert proc.positions(10, [item]) is None
+
+
+def test_gemma_image_max_tokens_picks_an_accepted_soft_token_budget():
+    for budget, tier in ((910, 560), (70, 70), (None, None)):  # the largest accepted budget within the limit
+        proc, fake = _gemma_processor(MultimodalConfig(image_max_tokens=budget))
+        proc.process([object()])
+        assert fake.calls == [tier]
+    with pytest.raises(ValueError, match="below the smallest"):  # a maximum no budget honors is refused at start-up instead of rounded up
+        _gemma_processor(MultimodalConfig(image_max_tokens=60))
+    proc, _ = _gemma_processor(MultimodalConfig(image_min_tokens=500, processor_kwargs={"max_soft_tokens": 1120}))
+    # every image is scaled to its budget, so the minimum has no effect; an explicit kwarg wins over the budget
+    assert proc.get_mm_processor_kwargs(proc.mm) == {"return_tensors": "pt", "max_soft_tokens": 1120}
+
+
+def test_gemma_dummy_item_is_one_pooled_soft_token():
+    proc, _ = _gemma_processor()
+    (dummy,) = proc.dummy_items(torch.bfloat16, torch.device("cpu"))
+    dummy.validate()
+    assert dummy.feature.shape == (9, 768) and dummy.num_tokens == 1 and dummy.num_soft_tokens == 1
+    assert dummy.position_ids.tolist() == [[x, y] for y in range(3) for x in range(3)]
+
+
+def _gemma_unified_config():
+    return SimpleNamespace(
+        architectures=["Gemma4UnifiedForConditionalGeneration"],
+        image_token_id=258880,
+        boi_token_id=255999,
+        eoi_token_id=258882,
+        vision_config=SimpleNamespace(patch_size=16, pooling_kernel_size=3, model_patch_size=48, num_soft_tokens=280),
+        text_config=SimpleNamespace(vocab_size=262144),
+    )
+
+
+class _FakeGemmaUnifiedImageProcessor:
+    """Six super-patches padded out to the budget's rows, like the real processor: one row per soft token."""
+
+    def __call__(self, images, return_tensors, max_soft_tokens=None):
+        rows = max_soft_tokens or 280
+        pixels = torch.zeros(1, rows, 6912)
+        pixels[0, :6] = 0.25
+        positions = torch.full((1, rows, 2), -1, dtype=torch.int64)
+        positions[0, :6, 0] = torch.arange(6) % 3
+        positions[0, :6, 1] = torch.arange(6) // 3
+        return {"pixel_values": pixels, "image_position_ids": positions, "num_soft_tokens_per_image": torch.tensor([6])}
+
+
+def test_gemma_unified_items_are_one_row_per_soft_token():
+    proc = Gemma4UnifiedMMProcessor(_gemma_unified_config(), "/nonexistent", MultimodalConfig(image_max_tokens=100))
+    proc._image_processor = lambda: _FakeGemmaUnifiedImageProcessor()
+    (item,) = proc.process([object()])
+    assert item.feature.shape == (6, 6912) and item.num_soft_tokens == 6 and item.position_ids[4].tolist() == [1, 1]
+    assert proc.prompt_replacement(item).full == [255999] + [258880] * 6 + [258882]
+    assert proc.get_mm_processor_kwargs(proc.mm) == {"return_tensors": "pt", "max_soft_tokens": 70}  # the same budgets as the tower release
+    (dummy,) = proc.dummy_items(torch.bfloat16, torch.device("cpu"))
+    dummy.validate()
+    assert dummy.feature.shape == (1, 6912) and dummy.num_tokens == 1 and dummy.position_ids.tolist() == [[0, 0]]
+
+
 def test_registry_resolves_by_architecture(monkeypatch):
     import freetoken.utils
     from freetoken.mm.processor import get_mm_processor
 
     configs = {
         "/qwen": _hf_config(),
+        "/gemma": _gemma_config(),
+        "/gemma-unified": _gemma_unified_config(),
         "/text-only": _hf_config(vision=False),
         "/unknown-vlm": _hf_config(arch="SomeOtherForConditionalGeneration"),
     }
     monkeypatch.setattr(freetoken.utils, "cached_load_hf_config", lambda p: configs[p])
     assert isinstance(get_mm_processor("/qwen"), QwenVLMMProcessor)
     assert get_mm_processor("/qwen", MultimodalConfig(disabled_encoders=frozenset({"vision"}))) is None  # --mm-disable vision
+    assert isinstance(get_mm_processor("/gemma"), Gemma4MMProcessor)
+    assert isinstance(get_mm_processor("/gemma-unified"), Gemma4UnifiedMMProcessor)
     assert get_mm_processor("/text-only") is None
     assert get_mm_processor("/unknown-vlm") is None
     assert get_mm_processor("/missing") is None  # a config that fails to load means no vision

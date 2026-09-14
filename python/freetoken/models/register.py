@@ -72,6 +72,9 @@ _GEMMA4_SEGMENTS = (
     ("feed_forward.router", "router"),
 )
 _GEMMA4_PACKED = _DENSE_PACKED + _EXPERTS_PACKED
+_GEMMA4_PROCESSOR = "freetoken.mm.processors.gemma4:Gemma4MMProcessor"
+_GEMMA4_UNIFIED_PROCESSOR = "freetoken.mm.processors.gemma4:Gemma4UnifiedMMProcessor"
+_GEMMA4_ENCODERS = (EncoderSpec("vision", "vision_config", ("image",)),)
 _MINIMAX_M3_PACKED = _DENSE_PACKED + (
     ("index_qk_proj", ("index_q_proj", "index_k_proj")),
 ) + _EXPERTS_W123_PACKED
@@ -215,10 +218,12 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
     ),
     "Gemma4ForConditionalGeneration": ModelSpec(
         "freetoken.models.gemma4",
-        "Gemma4ForCausalLM",
+        "Gemma4ForConditionalGeneration",
         checkpoint_roots=_LANGUAGE_MODEL_ROOT,
         checkpoint_segments=_GEMMA4_SEGMENTS,
         packed_modules_mapping=_GEMMA4_PACKED,
+        mm_processor=_GEMMA4_PROCESSOR,
+        encoders=_GEMMA4_ENCODERS,
     ),
     "Gemma4ForCausalLM": ModelSpec(
         "freetoken.models.gemma4",
@@ -226,14 +231,15 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         checkpoint_segments=_GEMMA4_SEGMENTS,
         packed_modules_mapping=_GEMMA4_PACKED,
     ),
-    # Dense text tower of the gemma-4-12B "Unified"/omni model (model_type gemma4_unified_text).
-    # Same decoder as gemma4; the dense feed-forward is selected via config.is_moe.
+    # the gemma-4-12B "Unified" release (model_type gemma4_unified): the gemma4 decoder with a dense feed-forward and a linear vision embedder in place of the ViT tower; audio is not wired
     "Gemma4UnifiedForConditionalGeneration": ModelSpec(
         "freetoken.models.gemma4",
-        "Gemma4ForCausalLM",
+        "Gemma4UnifiedForConditionalGeneration",
         checkpoint_roots=_LANGUAGE_MODEL_ROOT,
         checkpoint_segments=_GEMMA4_SEGMENTS,
         packed_modules_mapping=_GEMMA4_PACKED,
+        mm_processor=_GEMMA4_UNIFIED_PROCESSOR,
+        encoders=_GEMMA4_ENCODERS,
     ),
     "Gemma4UnifiedForCausalLM": ModelSpec(
         "freetoken.models.gemma4",

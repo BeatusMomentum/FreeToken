@@ -16,9 +16,15 @@ MODELS = [
     if os.path.exists(os.path.join(p, "config.json"))
 ]
 
-pytestmark = pytest.mark.skipif(
-    not MODELS, reason="neither FREETOKEN_QWEN36_MODEL nor FREETOKEN_QWEN3VL_MODEL points at a checkpoint"
-)
+GEMMA = os.environ.get("FREETOKEN_GEMMA4_MODEL", "")
+
+pytestmark = [
+    pytest.mark.needs_weights,
+    pytest.mark.skipif(
+        not MODELS and not os.path.exists(os.path.join(GEMMA, "config.json")),
+        reason="no FREETOKEN_QWEN36_MODEL / FREETOKEN_QWEN3VL_MODEL / FREETOKEN_GEMMA4_MODEL checkpoint",
+    ),
+]
 
 
 def _png(w, h):
@@ -103,3 +109,34 @@ def test_count_prompt_tokens_counts_the_expanded_image(manager):
     counted = asyncio.run(count_prompt_tokens(messages, None, {}, state))
     expanded = manager.tokenize([_msg([png])])[0].input_ids.numel()
     assert counted == expanded and counted > 256
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(GEMMA, "config.json")), reason="FREETOKEN_GEMMA4_MODEL not set")
+def test_gemma_wraps_the_pad_span_in_boi_eoi():
+    from freetoken.mm.processor import get_mm_processor
+    from freetoken.tokenizer.tokenize import TokenizeManager
+    from freetoken.utils import cached_load_hf_config
+    from freetoken.utils.hf import load_tokenizer
+
+    hf = cached_load_hf_config(GEMMA)
+    r = TokenizeManager(load_tokenizer(GEMMA), get_mm_processor(GEMMA)).tokenize([_msg([_png(640, 400)])])[0]
+    item = r.mm_items[0]
+    ((start, end),) = item.offsets
+    ids = r.input_ids
+    assert ids[start - 1].item() == hf.boi_token_id and ids[end].item() == hf.eoi_token_id
+    assert end - start == item.num_soft_tokens and r.mrope_positions is None
+    assert bool((ids[start:end] == item.pad_value).all())
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(GEMMA, "config.json")), reason="FREETOKEN_GEMMA4_MODEL not set")
+def test_gemma_image_max_tokens_picks_a_smaller_soft_token_budget():
+    from freetoken.mm.config import MultimodalConfig
+    from freetoken.mm.processor import get_mm_processor
+    from freetoken.tokenizer.tokenize import TokenizeManager
+    from freetoken.utils.hf import load_tokenizer
+
+    tokenizer = load_tokenizer(GEMMA)
+    default = TokenizeManager(tokenizer, get_mm_processor(GEMMA)).tokenize([_msg([_png(640, 400)])])[0]
+    budgeted = TokenizeManager(tokenizer, get_mm_processor(GEMMA, MultimodalConfig(image_max_tokens=100))).tokenize([_msg([_png(640, 400)])])[0]
+    # the processor scales the image to the budget as far as its aspect ratio allows: 10x6 pooled cells for 640x400
+    assert budgeted.mm_items[0].num_soft_tokens == 60 < default.mm_items[0].num_soft_tokens
