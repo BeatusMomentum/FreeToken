@@ -77,6 +77,8 @@ _GEMMA4_PACKED = _DENSE_PACKED + _EXPERTS_PACKED
 _GEMMA4_PROCESSOR = "freetoken.mm.processors.gemma4:Gemma4MMProcessor"
 _GEMMA4_UNIFIED_PROCESSOR = "freetoken.mm.processors.gemma4:Gemma4UnifiedMMProcessor"
 _GEMMA4_ENCODERS = (EncoderSpec("vision", "vision_config", ("image",)),)
+_MUSE_GLIMMER_PROCESSOR = "freetoken.mm.processors.muse_glimmer:MuseGlimmerMMProcessor"
+_MUSE_GLIMMER_ENCODERS = (EncoderSpec("vision", "vision_config", ("image",)),)
 _MINIMAX_M3_PACKED = _DENSE_PACKED + (
     ("index_qk_proj", ("index_q_proj", "index_k_proj")),
 ) + _EXPERTS_W123_PACKED
@@ -196,18 +198,21 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         unquantized_modules=_QWEN3_5_UNQUANTIZED,
     ),
     # Muse-Glimmer-30B (model_type muse_glimmer): multimodal wrapper config (text tower in
-    # text_config, weights under model.language_model.); served text-only. Dense gated GQA
-    # with a [SWA x3, full] pattern -- full layers are NoPE -- weightless qk norms, centered
-    # (1+w) sandwich norms and softcapped logits; the NVFP4 release is compressed-tensors
-    # W4A16 on every text Linear.
+    # text_config, weights under model.language_model.); the windowed ViT under
+    # model.vision_tower. serves image input. Dense gated GQA with a [SWA x3, full]
+    # pattern -- full layers are NoPE -- weightless qk norms, centered (1+w) sandwich norms
+    # and softcapped logits; the NVFP4 release is compressed-tensors W4A16 on every text
+    # Linear.
     "MuseGlimmerForConditionalGeneration": ModelSpec(
         "freetoken.models.muse_glimmer",
-        "MuseGlimmerForCausalLM",
+        "MuseGlimmerForConditionalGeneration",
         checkpoint_roots=_LANGUAGE_MODEL_ROOT,
         packed_modules_mapping=(
             ("qkvg_proj", ("q_proj", "k_proj", "v_proj", "gate_proj")),
             ("gate_up_proj", ("gate_proj", "up_proj")),
         ),
+        mm_processor=_MUSE_GLIMMER_PROCESSOR,
+        encoders=_MUSE_GLIMMER_ENCODERS,
     ),
     "MistralForCausalLM": ModelSpec(
         "freetoken.models.mistral",

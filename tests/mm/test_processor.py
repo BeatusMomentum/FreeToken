@@ -14,6 +14,7 @@ from freetoken.mm.config import MultimodalConfig
 from freetoken.mm.processor import MMProcessor, PromptReplacement, image_positions
 from freetoken.mm.processors.gemma4 import Gemma4MMProcessor, Gemma4UnifiedMMProcessor
 from freetoken.mm.processors.glm5_next import Glm5NextMMProcessor
+from freetoken.mm.processors.muse_glimmer import MuseGlimmerMMProcessor
 from freetoken.mm.processors.qwen_vl import QwenVLMMProcessor
 
 PLACEHOLDER = 7
@@ -312,6 +313,43 @@ def test_glm_token_budget_reaches_the_image_processor_and_rope_stays_one_dimensi
     assert dummy.feature.shape == (4, 1176) and dummy.num_tokens == 1
 
 
+def _muse_config():
+    return SimpleNamespace(
+        architectures=["MuseGlimmerForConditionalGeneration"],
+        image_token_id=200092,
+        vision_config=SimpleNamespace(merge_size=2, patch_temporal=2, patch_size=14),
+        text_config=SimpleNamespace(vocab_size=202048),
+    )
+
+
+def test_muse_wraps_the_pads_in_image_start_end_and_takes_only_a_token_maximum():
+    calls = []
+
+    class _FakeImageProcessor:
+        def __call__(self, images, **kwargs):
+            calls.append(kwargs)
+            return {"pixel_values": torch.zeros(16, 1176), "image_grid_thw": torch.tensor([[1, 4, 4]])}
+
+    mm = MultimodalConfig(image_min_tokens=32, image_max_tokens=1024, processor_kwargs={"do_convert_rgb": False})
+    proc = MuseGlimmerMMProcessor(_muse_config(), "/nonexistent", mm)
+    proc._image_processor = lambda: _FakeImageProcessor()
+    (item,) = proc.process([object()])
+    # the image processor has no minimum knob: only the maximum reaches it, the extra kwarg rides along
+    assert calls == [{"return_tensors": "pt", "max_image_tokens": 1024, "do_convert_rgb": False}]
+    assert item.grid_thw == [1, 4, 4] and item.feature.dtype == torch.bfloat16
+    # the template renders one <|patch|>; the replacement adds the start/end wrapper the checkpoint processor renders
+    repl = proc.prompt_replacement(item)
+    assert proc.placeholder == [200092] and repl.full == [200080, *[200092] * 4, 200081]
+    assert repl.embed_spans() == [[1, 5]] and proc.positions(10, [item]) is None
+    proc = MuseGlimmerMMProcessor(_muse_config(), "/nonexistent", MultimodalConfig())
+    proc._image_processor = lambda: _FakeImageProcessor()
+    proc.process([object()])
+    assert calls[-1] == {"return_tensors": "pt"}
+    (dummy,) = proc.dummy_items(torch.bfloat16, torch.device("cpu"))
+    dummy.validate()
+    assert dummy.feature.shape == (4, 1176) and dummy.num_tokens == 1
+
+
 def test_registry_resolves_by_architecture(monkeypatch):
     import freetoken.utils
     from freetoken.mm.processor import get_mm_processor
@@ -321,6 +359,7 @@ def test_registry_resolves_by_architecture(monkeypatch):
         "/gemma": _gemma_config(),
         "/gemma-unified": _gemma_unified_config(),
         "/glm": _glm_config(),
+        "/muse": _muse_config(),
         "/text-only": _hf_config(vision=False),
         "/unknown-vlm": _hf_config(arch="SomeOtherForConditionalGeneration"),
     }
@@ -330,6 +369,7 @@ def test_registry_resolves_by_architecture(monkeypatch):
     assert isinstance(get_mm_processor("/gemma"), Gemma4MMProcessor)
     assert isinstance(get_mm_processor("/gemma-unified"), Gemma4UnifiedMMProcessor)
     assert isinstance(get_mm_processor("/glm"), Glm5NextMMProcessor)
+    assert isinstance(get_mm_processor("/muse"), MuseGlimmerMMProcessor)
     assert get_mm_processor("/text-only") is None
     assert get_mm_processor("/unknown-vlm") is None
     assert get_mm_processor("/missing") is None  # a config that fails to load means no vision
