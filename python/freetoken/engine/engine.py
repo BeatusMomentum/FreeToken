@@ -504,7 +504,8 @@ class Engine:
         if config.active_encoders and ftw_lacks_vision(config.model_path):
             raise ValueError(
                 f"{config.model_path} holds no vision encoder tensors: it was converted by a build before this "
-                "family served images. Reconvert it with `ft checkpoint`, or start with --text-model-only"
+                "family served images. Reconvert it with `ft checkpoint`, add the encoder in place with "
+                "scripts/ftw_hotfix.py (docs/ftw-hotfix.md), or start with --text-model-only"
             )
         # _materialize casts each loaded tensor to its model-param dtype (model_state), so
         # models declaring per-tensor dtypes (e.g. DSV4's mixed fp8/fp32/bf16) are preserved;

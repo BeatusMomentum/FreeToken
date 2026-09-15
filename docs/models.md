@@ -56,7 +56,7 @@ These families accept image input by default; pass `--text-model-only` to skip t
   see [ftw-hotfix.md](ftw-hotfix.md) for the affected checkpoints and the repair tool.
 - An FTW converted before its family served images holds no vision encoder: `ft serve`
   refuses it unless started with `--text-model-only` (or `--mm-disable vision`); reconvert it
-  with `ft checkpoint` to serve images from it.
+  with `ft checkpoint`, or add the encoder in place with [scripts/ftw_hotfix.py](ftw-hotfix.md).
 - DeepSeek-V4 checkpoints must keep the `inference/config.json` subdir — the
   authoritative model args are read from there.
 - Qwen3.8-Flash-Next keeps a 47.7 GiB PLE n-gram table pinned in host RAM.

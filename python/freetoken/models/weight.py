@@ -243,6 +243,15 @@ def load_weight(
         yield name, tensor
 
 
+def load_vision_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, torch.Tensor]]:
+    """The vision encoder tensors alone, named as load_weight names them, read by the family's encoder-only reader."""
+    _config, spec = _spec_for_model_path(model_path)
+    reader = _model_override(spec, "iter_vision_weights")
+    if reader is None:
+        raise ValueError(f"{spec.module} has no encoder-only weight reader")
+    return reader(model_path, device)
+
+
 def ftw_lacks_vision(model_path: str) -> bool:
     """True for an FTW that holds no vision encoder tensors: converted by a build before the family served images."""
     from freetoken.checkpoint.ftw import ftw_tensor_names, is_ftw_checkpoint
@@ -273,6 +282,7 @@ def load_q4_0_moe_expert_sources(
 
 __all__ = [
     "load_weight",
+    "load_vision_weight",
     "ftw_lacks_vision",
     "load_q4_0_moe_expert_sources",
     "iter_expert_tensors_parallel",
