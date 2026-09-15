@@ -221,8 +221,9 @@ def test_registry_resolves_both_architectures():
         assert spec.module == "freetoken.models.minimax_m3"
 
 
-def test_auto_backend_resolution():
+def test_auto_backend_resolution(monkeypatch):
     from freetoken.attention import attention_backend_info
+    from freetoken.attention.m3_sparse import _pick_inner_backend
     from freetoken.engine.engine import _required_attn_types, _resolve_auto_attention_backend
 
     cfg = parse_config(_hf_config())
@@ -230,6 +231,9 @@ def test_auto_backend_resolution():
     assert required == frozenset({AttnType.BSA})
     assert _resolve_auto_attention_backend(required) == "m3_sparse"
     assert attention_backend_info("m3_sparse").page_sizes == (128,)
+    # the dense leading layers take a FULL backend from the same resolver, filtered to 128-token pages
+    monkeypatch.delenv("FREETOKEN_M3_INNER_BACKEND", raising=False)
+    assert _pick_inner_backend(128) in ("fa,fi", "fi", "triton")
 
 
 def test_nvfp4_experts_restricted_to_triton_for_swigluoai(monkeypatch):
