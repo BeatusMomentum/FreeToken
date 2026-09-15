@@ -1,4 +1,4 @@
-"""Image tokenization against real Qwen VL, Gemma-4 and GLM-5.3 checkpoints (skipped when absent)."""
+"""Image tokenization against real Qwen VL, Gemma-4, GLM-5.3 and MiniMax-M3 checkpoints (skipped when absent)."""
 
 from __future__ import annotations
 
@@ -18,12 +18,13 @@ MODELS = [
 
 GEMMA = os.environ.get("FREETOKEN_GEMMA4_MODEL", "")
 GLM = os.environ.get("FREETOKEN_GLM53_MODEL", "")
+MINIMAX = os.environ.get("FREETOKEN_MINIMAX_M3_MODEL", "")
 
 pytestmark = [
     pytest.mark.needs_weights,
     pytest.mark.skipif(
-        not MODELS and not any(os.path.exists(os.path.join(p, "config.json")) for p in (GEMMA, GLM)),
-        reason="no FREETOKEN_QWEN36_MODEL / FREETOKEN_QWEN3VL_MODEL / FREETOKEN_GEMMA4_MODEL / FREETOKEN_GLM53_MODEL checkpoint",
+        not MODELS and not any(os.path.exists(os.path.join(p, "config.json")) for p in (GEMMA, GLM, MINIMAX)),
+        reason="no FREETOKEN_QWEN36_MODEL / FREETOKEN_QWEN3VL_MODEL / FREETOKEN_GEMMA4_MODEL / FREETOKEN_GLM53_MODEL / FREETOKEN_MINIMAX_M3_MODEL checkpoint",
     ),
 ]
 
@@ -163,3 +164,27 @@ def test_glm_expands_the_image_token_between_the_template_wrappers():
     assert bool((ids[start:end] == item.pad_value).all()) and r.mrope_positions is None
     budgeted = TokenizeManager(tokenizer, get_mm_processor(GLM, MultimodalConfig(image_max_tokens=100))).tokenize([_msg([_png(640, 400)])])[0]
     assert budgeted.mm_items[0].num_tokens <= 100
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(MINIMAX, "config.json")), reason="FREETOKEN_MINIMAX_M3_MODEL not set")
+def test_minimax_wraps_the_pad_span_in_start_end_tokens():
+    from freetoken.mm.config import MultimodalConfig
+    from freetoken.mm.processor import get_mm_processor
+    from freetoken.mm.processors.minimax_m3 import IMAGE_END_ID, IMAGE_START_ID
+    from freetoken.tokenizer.tokenize import TokenizeManager
+    from freetoken.utils.hf import load_tokenizer
+
+    tokenizer = load_tokenizer(MINIMAX)
+    # the processor hardcodes the wrapper ids the checkpoint config does not name
+    assert tokenizer.convert_tokens_to_ids("]<]start of image[>[") == IMAGE_START_ID
+    assert tokenizer.convert_tokens_to_ids("]<]end of image[>[") == IMAGE_END_ID
+    r = TokenizeManager(tokenizer, get_mm_processor(MINIMAX)).tokenize([_msg([_png(640, 400)])])[0]
+    item = r.mm_items[0]
+    ((start, end),) = item.offsets
+    ids = r.input_ids
+    _, h, w = item.grid_thw
+    assert ids[start - 1].item() == IMAGE_START_ID and ids[end].item() == IMAGE_END_ID
+    assert end - start == h * w // 4 == 322 and r.mrope_positions is None
+    assert bool((ids[start:end] == item.pad_value).all())
+    budgeted = TokenizeManager(tokenizer, get_mm_processor(MINIMAX, MultimodalConfig(image_max_tokens=64))).tokenize([_msg([_png(640, 400)])])[0]
+    assert budgeted.mm_items[0].num_tokens <= 64

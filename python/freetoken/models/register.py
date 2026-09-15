@@ -80,6 +80,8 @@ _GEMMA4_ENCODERS = (EncoderSpec("vision", "vision_config", ("image",)),)
 _MINIMAX_M3_PACKED = _DENSE_PACKED + (
     ("index_qk_proj", ("index_q_proj", "index_k_proj")),
 ) + _EXPERTS_W123_PACKED
+_MINIMAX_M3_PROCESSOR = "freetoken.mm.processors.minimax_m3:MiniMaxM3MMProcessor"
+_MINIMAX_M3_ENCODERS = (EncoderSpec("vision", "vision_config", ("image",)),)
 
 _MODEL_REGISTRY: dict[str, ModelSpec] = {
     "LlamaForCausalLM": ModelSpec(
@@ -125,14 +127,17 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         packed_modules_mapping=_DENSE_PACKED + _EXPERTS_W123_PACKED,
     ),
     # MiniMax-M3 (model_type minimax_m3_vl): multimodal wrapper config (text tower in
-    # text_config, weights under language_model.); served text-only. GQA + block-sparse
-    # attention (lightning indexer, top-k 128-token blocks) on the trailing layers,
-    # sigmoid/bias-routed NVFP4 experts + MXFP8 shared expert, swigluoai activation.
+    # text_config, weights under language_model.); the CLIP-style tower under vision_tower.
+    # serves image input. GQA + block-sparse attention (lightning indexer, top-k 128-token
+    # blocks) on the trailing layers, sigmoid/bias-routed NVFP4 experts + MXFP8 shared
+    # expert, swigluoai activation.
     "MiniMaxM3SparseForConditionalGeneration": ModelSpec(
         "freetoken.models.minimax_m3",
-        "MiniMaxM3ForCausalLM",
+        "MiniMaxM3ForConditionalGeneration",
         checkpoint_roots=(("model", "language_model.model"), ("lm_head", "language_model.lm_head")),
         packed_modules_mapping=_MINIMAX_M3_PACKED,
+        mm_processor=_MINIMAX_M3_PROCESSOR,
+        encoders=_MINIMAX_M3_ENCODERS,
     ),
     # Text-only sibling (the text_config's own architectures entry).
     "MiniMaxM3SparseForCausalLM": ModelSpec(
