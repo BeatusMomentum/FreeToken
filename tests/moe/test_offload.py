@@ -881,3 +881,52 @@ def test_lock_failure_downgrades_echoed_residency(monkeypatch):
         with hb.PinPipeline() as pins:
             pins(1, {"gate_up": hb.HostBank((4,), torch.uint8)})
     assert plan2.actual == {1: hb.HostResidency.PAGEABLE.value}
+
+
+def test_inactive_hybrid_routes_use_initialized_slots(monkeypatch):
+    """Inactive routes can read slot 0 with zero weight, so its payload must be initialized."""
+    from freetoken.moe.offload_cache import OffloadMoeCache
+
+    empty = torch.empty
+
+    def poisoned_empty(*args, **kwargs):
+        tensor = empty(*args, **kwargs)
+        if tensor.is_floating_point():
+            tensor.fill_(float("nan"))
+        return tensor
+
+    monkeypatch.setattr(torch, "empty", poisoned_empty)
+    _init_tp()
+    layer = _bf16_offload_layer(0, 4, 2, 8, 16)
+    cache = OffloadMoeCache(num_layers=1, num_experts=4, cache_size=6, device=torch.device("cpu"), decode_target="hybrid")
+    cache.set_bank_sources({"gate_up": [torch.randn(4, 32, 8)], "down": [torch.randn(4, 8, 16)]})
+    layer.offload_cache = cache
+    assert all(c.shape[0] == 6 and not c.any() for c in cache.bank_caches.values())
+    cache.rebuild(8)
+    assert all(c.shape[0] == 8 and not c.any() for c in cache.bank_caches.values())
+    seen = {}
+
+    class FakeExecutor:
+        def decode_submit(self, layer_id, h, w, ids, out_dtype=None):
+            seen["cpu_ids"] = ids.clone()
+            return ("pending",)
+
+        def decode_sync(self, pending):
+            return torch.zeros(1, 8)
+
+    cache.cpu_executor = FakeExecutor()
+    def ensure_hybrid(layer_id, ids):
+        ids.copy_(torch.tensor([[2, -1]], dtype=torch.int32))
+
+    monkeypatch.setattr(cache, "ensure_experts_hybrid", ensure_hybrid)
+    monkeypatch.setattr(cache, "copy_missing", lambda: None)
+
+    def fake_gemm(cache_, hidden_states, topk_weights, topk_ids, **kw):
+        seen["gpu_slots"] = topk_ids.clone()
+        seen["gpu_w"] = topk_weights.clone()
+        return torch.zeros(1, 8)
+
+    monkeypatch.setattr(layer, "_expert_gemm", fake_gemm)
+    layer._decode_hybrid(cache, torch.randn(1, 8), torch.tensor([[0.7, 0.3]]), torch.tensor([[3, 1]], dtype=torch.int32))
+    assert seen["gpu_slots"].tolist() == [[2, 0]] and torch.equal(seen["gpu_w"], torch.tensor([[0.7, 0.0]]))
+    assert seen["cpu_ids"].tolist() == [[-1, 1]]

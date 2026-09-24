@@ -354,15 +354,16 @@ class OffloadMoeCache:
                     name, layer_id, source.shape, source.dtype,
                 )
             self.bank_sources[name] = list(per_layer)
-            self.bank_caches[name] = torch.empty(
-                (self.cache_size, *head.shape[1:]),
-                dtype=head.dtype,
-                device=self.device,
-            )
+            self.bank_caches[name] = self._alloc_slot_cache(head, self.cache_size)
         self.banks = [(self.bank_sources[n], self.bank_caches[n]) for n in self.bank_schema]
         self._build_copy_plan()
         if self.prefill_overlap:
             self._init_prefill_overlap_buffers()
+
+    def _alloc_slot_cache(self, head: torch.Tensor, cache_size: int) -> torch.Tensor:
+        # Inactive hybrid routes can read slot 0 with zero weight. Uninitialized
+        # payloads may contain NaNs, which survive multiplication by zero.
+        return torch.zeros((cache_size, *head.shape[1:]), dtype=head.dtype, device=self.device)
 
     def _build_copy_plan(self) -> None:
         self._build_fused_copy_plan()
@@ -492,9 +493,7 @@ class OffloadMoeCache:
         # 3. Reallocate the slot cache from the retained host sources.
         for name in self.bank_schema:
             head = self.bank_sources[name][0]
-            self.bank_caches[name] = torch.empty(
-                (cache_size, *head.shape[1:]), dtype=head.dtype, device=self.device
-            )
+            self.bank_caches[name] = self._alloc_slot_cache(head, cache_size)
         self.banks = [(self.bank_sources[n], self.bank_caches[n]) for n in self.bank_schema]
         self._build_copy_plan()  # slot caches were reallocated -> refresh fused-copy addrs
         # 4. Reallocate cache_size-shaped bookkeeping; reset the slot map (cold start).
