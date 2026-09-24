@@ -213,7 +213,7 @@ def test_floors_dsv4_reports_real_window_floor():
     assert floors["kv_tokens"] > 0
     # The window (swa) floor is reported too, in tokens (window pages x P) -- not the bogus 0 the
     # radix-only branch used to give for DSV4.
-    assert floors["swa_tokens"] == _dsv4_window_floor_pages(cfg, P) * P
+    assert floors["swa_tokens"] == (_dsv4_window_floor_pages(cfg, P) - 1) * P
 
 
 def test_floors_missing_config_all_zero():
@@ -224,6 +224,23 @@ def test_floors_missing_config_all_zero():
         "mamba_slots": 0,
         "swa_tokens": 0,
     }
+
+
+def test_swa_floor_excludes_reserved_sentinel():
+    from freetoken.attention import AttnType
+    from freetoken.kvcache.hybrid_swa_pool import _swa_paged_num_tokens
+
+    cfg = SimpleNamespace(
+        page_size=1, max_running_req=2, max_seq_len=1024,
+        cache_type="swa_radix", swa_num_pages_override=1, swa_full_tokens_ratio=1.0,
+        model_config=SimpleNamespace(
+            dsv4_args=None, has_swa_attention=True,
+            kv_cache_group_specs=lambda: [SimpleNamespace(is_swa=True, sliding_window=128, attn_type=AttnType.SWA)],
+        ),
+    )
+    eng = SimpleNamespace(config=cfg, kv_cache=None, moe_offload_cache=None, linear_state_pool=None)
+    physical_tokens = _swa_paged_num_tokens(cfg, num_full_pages=1024)
+    assert compute_cache_floors(eng)["swa_tokens"] == physical_tokens - 1
 
 
 def test_status_meta_bundles_units_free_vram_and_floors():
