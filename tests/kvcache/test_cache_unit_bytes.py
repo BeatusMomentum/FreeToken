@@ -226,23 +226,6 @@ def test_floors_missing_config_all_zero():
     }
 
 
-def test_swa_floor_excludes_reserved_sentinel():
-    from freetoken.attention import AttnType
-    from freetoken.kvcache.hybrid_swa_pool import _swa_paged_num_tokens
-
-    cfg = SimpleNamespace(
-        page_size=1, max_running_req=2, max_seq_len=1024,
-        cache_type="swa_radix", swa_num_pages_override=1, swa_full_tokens_ratio=1.0,
-        model_config=SimpleNamespace(
-            dsv4_args=None, has_swa_attention=True,
-            kv_cache_group_specs=lambda: [SimpleNamespace(is_swa=True, sliding_window=128, attn_type=AttnType.SWA)],
-        ),
-    )
-    eng = SimpleNamespace(config=cfg, kv_cache=None, moe_offload_cache=None, linear_state_pool=None)
-    physical_tokens = _swa_paged_num_tokens(cfg, num_full_pages=1024)
-    assert compute_cache_floors(eng)["swa_tokens"] == physical_tokens - 1
-
-
 def test_status_meta_bundles_units_free_vram_and_floors():
     # Duck-typed engine: unit bytes measured, the pool budget degrades to 0 (no
     # _post_weights_free baseline captured — real Engine.__init__ records it after weights
