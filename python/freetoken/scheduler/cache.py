@@ -635,6 +635,19 @@ class CacheManager:
         # ids stay below 2^31 (multimodal pseudo ids included), so a pair packs into one int64
         return (ids[:m].to(torch.int64) << 31) | ids[1 : m + 1].to(torch.int64)
 
+    def rollback_tail(self, req: Req, keep_len: int, drop_len: int) -> None:
+        """Free the slots allocated for positions [keep_len, drop_len), rounded out to whole pages as allocate_paged allocates them.
+
+        Call inside lazy_free_region, after the forward that wrote them has drained.
+        """
+        start = div_ceil(keep_len, self.page_size) * self.page_size
+        end = div_ceil(drop_len, self.page_size) * self.page_size
+        if end > start:
+            tail = self.page_table[req.table_idx, start:end]
+            if self.swa_paged:
+                self._free_swa(tail)
+            self._free(tail)
+
     def _page_to_token(self, pages: torch.Tensor) -> torch.Tensor:
         if self.page_size == 1:
             return pages
